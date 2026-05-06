@@ -11,6 +11,9 @@ import android.graphics.Paint;
 import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
+import android.content.pm.PackageManager;
+import android.Manifest;
+import android.os.Build;
 
 import it.zenitlab.cordova.plugins.zbtprinter.ZPLConverter;
 import com.zebra.sdk.comm.BluetoothConnectionInsecure;
@@ -45,11 +48,60 @@ public class ZebraBluetoothPrinter extends CordovaPlugin implements DiscoveryHan
     private PrinterStatus printerStatus;
     private ZebraPrinter printer;
     private final int MAX_PRINT_RETRIES = 1;
+    private static final int REQUEST_BLUETOOTH_PERMISSIONS = 101;
+    private CallbackContext permissionCallback;
+    private String pendingBTAction;
+    private String pendingBTMac;
 
     public ZebraBluetoothPrinter() {
 
     }
 
+    private boolean ensureBluetoothPermission(CallbackContext callbackContext, String action, String macAddress) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!this.cordova.hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                permissionCallback = callbackContext;
+                pendingBTAction = action;
+                pendingBTMac = macAddress;
+                this.cordova.requestPermission(this, REQUEST_BLUETOOTH_PERMISSIONS, Manifest.permission.BLUETOOTH_CONNECT);
+                return false;
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!this.cordova.hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                permissionCallback = callbackContext;
+                pendingBTAction = action;
+                pendingBTMac = macAddress;
+                this.cordova.requestPermission(this, REQUEST_BLUETOOTH_PERMISSIONS, Manifest.permission.ACCESS_FINE_LOCATION);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Override
+    public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
+        if (requestCode == REQUEST_BLUETOOTH_PERMISSIONS) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (permissionCallback == null) {
+                return;
+            }
+            if (!granted) {
+                permissionCallback.error("Bluetooth permission denied");
+                permissionCallback = null;
+                pendingBTAction = null;
+                pendingBTMac = null;
+                return;
+            }
+            if ("getPrinterName".equals(pendingBTAction)) {
+                getPrinterName(pendingBTMac);
+            }
+            permissionCallback = null;
+            pendingBTAction = null;
+            pendingBTMac = null;
+            return;
+        }
+        super.onRequestPermissionResult(requestCode, permissions, grantResults);
+    }
 
     //    @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -79,6 +131,9 @@ public class ZebraBluetoothPrinter extends CordovaPlugin implements DiscoveryHan
             return true;
         } else if (action.equals("getPrinterName")) {
             String mac = args.getString(0);
+            if (!ensureBluetoothPermission(callbackContext, "getPrinterName", mac)) {
+                return true;
+            }
             getPrinterName(mac);
             return true;
         } else if (action.equals("getStatus")) {
@@ -346,7 +401,7 @@ public class ZebraBluetoothPrinter extends CordovaPlugin implements DiscoveryHan
             }
 
             if (zebraPrinterLinkOs != null) {
-                printer.printImage(zebraimage, 150, 0, zebraimage.getWidth(), zebraimage.getHeight(), false);
+                printer.printImage(zebraimage, 0, 0, zebraimage.getWidth(), zebraimage.getHeight(), false);
             } else {
                 Log.d(LOG_TAG, "Storing label on printer...");
                 printer.storeImage("wgkimage.pcx", zebraimage, -1, -1);
@@ -364,7 +419,7 @@ public class ZebraBluetoothPrinter extends CordovaPlugin implements DiscoveryHan
         cpcl += zebraimage.getHeight();
         cpcl += " 1\r\n";
         cpcl += "PW 750\r\nTONE 0\r\nSPEED 6\r\nSETFF 203 5\r\nON - FEED FEED\r\nAUTO - PACE\r\nJOURNAL\r\n";
-        cpcl += "PCX 150 0 !<wgkimage.pcx\r\n";
+        cpcl += "PCX 0 0 !<wgkimage.pcx\r\n";
         cpcl += "FORM\r\n";
         cpcl += "PRINT\r\n";
         thePrinterConn.write(cpcl.getBytes());
